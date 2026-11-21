@@ -15,7 +15,11 @@ from src import config as C
 from src.data_loader import DataError
 from src.prediction import (ModelsMissingError, driver_percentiles, horizon_table, load_models,
                             models_exist, predict_all, prepare_data, summarize_risk)
+from src.explain import describe, explain_instance, global_group_importance, make_background
+from src.intelligence import SUGGESTED_QUESTIONS, CallBudget, ask, build_context, evidence_brief
+from src.llm_client import ENV_KEY, GeminiClient, LLMError, LLMUnavailable
 from src.recommendations import DISCLAIMER, recommend
+from src.validation import calibration_table, confusion, evidence_status, monthly_tier_table, seasonal_history, tier_summary
 
 st.set_page_config(page_title="MosquiTech", page_icon="🦟", layout="wide", initial_sidebar_state="expanded")
 
@@ -103,6 +107,50 @@ def get_lag_correlation() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+@st.cache_data(show_spinner=False)
+def get_background() -> pd.DataFrame:
+    return make_background(get_features())
+
+
+@st.cache_data(show_spinner="Computing Shapley explanation...")
+def get_explanation(ward: str, asof_str: str, horizon: int) -> dict:
+    """Prediction-level explanation for one ward-week (cached per selection)."""
+    f = get_features()
+    row = f[(f["ward_id"] == ward) & (f["date"] == pd.Timestamp(asof_str))]
+    if row.empty:
+        raise ValueError("No feature data for this ward and week.")
+    return explain_instance(get_models()["bundles"][horizon]["model"], row.iloc[0], get_background())
+
+
+@st.cache_data(show_spinner="Computing global driver importance...")
+def get_global_groups(horizon: int) -> pd.DataFrame:
+    f = get_features()
+    test_rows = f[f["date"] > pd.Timestamp(C.VAL_END)].dropna(subset=C.FEATURE_COLS)
+    sample = test_rows.sample(n=min(60, len(test_rows)), random_state=C.RANDOM_STATE)
+    return global_group_importance(get_models()["bundles"][horizon]["model"], sample, get_background())
+
+
+@st.cache_data(show_spinner=False)
+def get_context(ward: str, asof_str: str, horizon: int) -> dict:
+    """Grounded context for MosquiTech Intelligence (real model outputs + dataset values only)."""
+    return build_context(feats=get_features(), preds=get_predictions(), models=get_models(), reports=get_reports(),
+                         background=get_background(), asof=pd.Timestamp(asof_str), ward=ward, horizon=horizon,
+                         explanation=get_explanation(ward, asof_str, horizon))
+
+
+@st.cache_data(show_spinner=False)
+def get_peak_week() -> pd.Timestamp:
+    """Held-out-period forecast week with the most HIGH/CRITICAL wards (3-week horizon)."""
+    p = get_predictions()
+    p = p[p["date"] > pd.Timestamp(C.VAL_END)]
+    counts = p["risk_h3"].isin(["HIGH", "CRITICAL"]).groupby(p["date"]).sum()
+    return pd.Timestamp(counts.idxmax())
+
+
+def _set_asof(date) -> None:
+    st.session_state["asof"] = pd.Timestamp(date)
+
+
 # --------------------------------------------------------------------------------------------------
 # Small UI helpers
 # --------------------------------------------------------------------------------------------------
@@ -155,6 +203,111 @@ def get_pred_row(preds: pd.DataFrame, ward: str, asof) -> pd.Series | None:
 # --------------------------------------------------------------------------------------------------
 # Tabs
 # --------------------------------------------------------------------------------------------------
+def season_panel(feats, asof, hz, thresholds, elevated):
+    """Evidence for whether the current tier mix is plausible for the time of year (dataset facts only)."""
+    target = asof + pd.Timedelta(weeks=hz)
+    hist = seasonal_history(feats, target, thresholds)
+    st.markdown("#### Is this forecast plausible for the time of year?")
+    a, b = st.columns([2, 3])
+    with a:
+        if hist:
+            st.markdown(
+                f"**Observed history:** in the same calendar weeks ({hist['calendar_window']}), {hist['share_actual_LOW_pct']:.0f}% of "
+                f"ward-weeks were LOW and {hist['share_actual_HIGH_or_CRITICAL_pct']:.0f}% were HIGH/CRITICAL "
+                f"({hist['ward_weeks']:,} ward-weeks over {hist['years']} years; mean {hist['mean_cases_per_ward_week']:.1f}, max {hist['max_cases_in_a_ward_week']} cases/week).")
+            if elevated == 0 and hist["share_actual_LOW_pct"] >= 90:
+                st.success("An all-LOW outlook is consistent with history for this time of year; it is not a malfunction. "
+                           "See Model Performance → risk-tier validation for out-of-sample accuracy. "
+                           "Use the sidebar button to jump to the 2025 peak week.")
+            elif elevated == 0:
+                st.warning("The model forecasts no HIGH/CRITICAL wards although this time of year was often active historically. "
+                           "Treat with caution and check recent weather and case inputs.")
+            else:
+                st.info(f"{elevated} ward(s) are HIGH/CRITICAL, which fits a season in which {hist['share_actual_HIGH_or_CRITICAL_pct']:.0f}% of ward-weeks were HIGH/CRITICAL historically.")
+        st.caption(f"Evidence status of this forecast: {evidence_status(target, feats['date'].max())}.")
+    with b:
+        m = feats.assign(month=feats["date"].dt.month).groupby("month")["dengue_cases"].mean().reindex(range(1, 13)).fillna(0)
+        fig = go.Figure(go.Bar(x=["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], y=m.values,
+                               marker_color=["#2dd4bf" if i + 1 == target.month else "#475569" for i in range(12)]))
+        fig.update_layout(title="Observed mean weekly cases per ward by month, 2016-2025 (target month highlighted)", yaxis_title="cases / ward / week")
+        show(fig, 260)
+
+
+def section_shap(feats, ward, asof, hz):
+    """Shapley prediction-level explanation + global driver importance."""
+    st.markdown("#### Prediction-level explanation (Shapley values)")
+    try:
+        ex = get_explanation(ward, str(pd.Timestamp(asof).date()), hz)
+    except ValueError as exc:
+        st.warning(str(exc))
+        return
+    st.markdown('<div class="mt-note">' + " ".join(describe(ex, hz)) + "</div>", unsafe_allow_html=True)
+    g = pd.Series(ex["groups"]).sort_values()
+    col = ["#e67e22" if v > 0 else "#38bdf8" for v in g.values]
+    a, b = st.columns(2)
+    fg = go.Figure(go.Bar(y=g.index, x=g.values, orientation="h", marker_color=col, text=[f"{v:+.2f}" for v in g.values], textposition="outside"))
+    fg.update_layout(title="Contribution by driver group (cases/week vs typical ward-week)", xaxis_title="cases / week")
+    with a:
+        show(fg, 360)
+    top = ex["features"].head(10).iloc[::-1]
+    ff = go.Figure(go.Bar(y=[f"{r.label} = {r.value:,.1f}" for r in top.itertuples()], x=top["contribution"], orientation="h",
+                          marker_color=["#e67e22" if v > 0 else "#38bdf8" for v in top["contribution"]]))
+    ff.update_layout(title="Top 10 individual features for this prediction", xaxis_title="cases / week")
+    with b:
+        show(ff, 360)
+    order = list(ex["groups"])
+    wf = go.Figure(go.Waterfall(x=["Typical ward-week"] + order + ["This prediction"], measure=["absolute"] + ["relative"] * len(order) + ["total"],
+                                y=[ex["baseline"]] + [ex["groups"][k] for k in order] + [0],
+                                increasing=dict(marker=dict(color="#e67e22")), decreasing=dict(marker=dict(color="#38bdf8")),
+                                totals=dict(marker=dict(color="#2dd4bf"))))
+    wf.update_layout(title="From a typical ward-week to this ward's prediction", yaxis_title="predicted cases / week")
+    show(wf, 360)
+    gl = get_global_groups(hz)
+    fgl = go.Figure(go.Bar(y=gl["group"], x=gl["mean_abs_contribution"], orientation="h", marker_color="#2dd4bf",
+                           text=[f"{v:.0f}%" for v in gl["share_pct"]], textposition="outside"))
+    fgl.update_layout(title="Across 60 sampled 2025 ward-weeks: average size of each driver group's contribution", xaxis_title="mean |contribution| (cases/week)",
+                      yaxis=dict(autorange="reversed"))
+    show(fgl, 320)
+    st.caption("Shapley values split the model's prediction among its inputs (baseline + contributions = prediction; checked in tests). "
+               "They show how the MODEL uses inputs, not what causes dengue. Inputs that move together (e.g. rainfall lags) share credit, "
+               "and the method evaluates mixed combinations of conditions that may not occur in reality.")
+
+
+def risk_validation_section(reports, thresholds):
+    vp, tp = reports["validation_predictions"], reports["test_predictions"]
+    if vp is None or tp is None:
+        return
+    st.markdown("#### Risk-tier validation (out-of-sample)")
+    st.caption(f"Tiers use training-period cut-points ({thresholds[0]:.0f} / {thresholds[1]:.0f} / {thresholds[2]:.0f} cases/week). "
+               "They were not tuned on these data. Below: do the forecast tiers match what actually happened?")
+    rows = []
+    for name, d in (("Validation 2023-24", vp), ("Test 2025", tp)):
+        s = tier_summary(d)
+        rows.append({"Period": name, "Ward-weeks": f"{s['ward_weeks']:,}", "Exact tier": f"{s['exact_tier_accuracy']*100:.1f}%",
+                     "Within one tier": f"{s['within_one_tier']*100:.1f}%", "HIGH/CRIT recall": f"{s['high_or_critical_recall']*100:.1f}%",
+                     "HIGH/CRIT precision": f"{s['high_or_critical_precision']*100:.1f}%",
+                     "Missed alarms": f"{s['missed_alarms_pred_low_actual_high_or_critical']} of {s['actual_high_or_critical']}",
+                     "False alarms": s["false_alarms_pred_high_or_critical_actual_low"]})
+    st.dataframe(pd.DataFrame(rows), **WIDE, hide_index=True)
+    fig = go.Figure()
+    for name, d, colr in (("Validation 2023-24", vp, "#7dd3fc"), ("Test 2025", tp, "#f4d03f")):
+        c = calibration_table(d)
+        fig.add_trace(go.Bar(x=c["tier"], y=c["mean_actual"], name=f"Actual mean cases - {name}", marker_color=colr))
+    fig.update_layout(barmode="group", title="Calibration: mean ACTUAL cases for wards forecast in each tier", yaxis_title="actual cases / ward / week")
+    a, b = st.columns(2)
+    with a:
+        show(fig, 340)
+    mt = monthly_tier_table(pd.concat([vp, tp])[lambda d: d["horizon"] == 3])
+    fm = go.Figure()
+    fm.add_trace(go.Bar(x=mt["month"], y=mt["actual_LOW_pct"], name="Actual LOW %", marker_color="#475569"))
+    fm.add_trace(go.Bar(x=mt["month"], y=mt["predicted_LOW_pct"], name="Forecast LOW %", marker_color="#2dd4bf"))
+    fm.update_layout(barmode="group", title="Share of ward-weeks that are LOW, by month (3-week forecasts)", xaxis=dict(title="Month", dtick=1), yaxis_title="%")
+    with b:
+        show(fm, 340)
+    st.caption("Dry-season months are almost entirely LOW in the actual data too, so all-LOW forecasts in those months are expected. "
+               "On the 2025 test year the CRITICAL tier over-forecast (forecast mean above actual mean): more false alarms than misses.")
+
+
 def tab_overview(feats, preds, asof, thresholds, latest_obs):
     st.subheader("Executive Overview")
     hz = st.radio("Forecast horizon", list(C.HORIZONS), index=1, horizontal=True, key="ov_h",
@@ -179,9 +332,7 @@ def tab_overview(feats, preds, asof, thresholds, latest_obs):
         f'{counts["MEDIUM"]} MEDIUM and {counts["LOW"]} LOW.</div>',
         unsafe_allow_html=True,
     )
-    if elevated == 0:
-        st.info("No ward is forecast HIGH/CRITICAL for this week. That is expected in the dry season. Use the **Forecast issued on** "
-                "selector in the sidebar to review a monsoon/post-monsoon week (for example, an August-September date).")
+    season_panel(feats, asof, hz, thresholds, elevated)
 
     a, b = st.columns(2)
     allh = pd.DataFrame([{"Horizon": f"{h} wk", "Tier": t, "Wards": summarize_risk(now, h)[t]} for h in C.HORIZONS for t in C.RISK_LABELS])
@@ -436,6 +587,7 @@ def tab_explain(feats, preds, wards, asof, models):
     show(fig2, 420)
     st.caption("Orange bars are in the top quartile of historical values. This is a descriptive comparison to history, not proof of cause. "
                "For sanitation score a LOW percentile is the concerning direction.")
+    section_shap(feats, ward, asof, hz)
 
 
 def tab_performance(models, reports, thresholds):
@@ -507,6 +659,7 @@ def tab_performance(models, reports, thresholds):
         with y:
             show(fcm, 360)
 
+    risk_validation_section(reports, thresholds)
     val_r2 = val[val["selected"]]["R2"].mean()
     test_r2 = tm["R2"].mean()
     st.markdown("#### Limitations")
@@ -552,6 +705,107 @@ def tab_recommendations(feats, preds, wards, asof, thresholds):
 
 
 # --------------------------------------------------------------------------------------------------
+def tab_intelligence(feats, preds, wards, asof, models):
+    st.subheader("🤖 MosquiTech Intelligence")
+    st.caption("Ask questions about a ward's forecast. The assistant only explains numbers produced by the ML model and the dataset; "
+               "it cannot change predictions or risk categories.")
+    client = GeminiClient.from_env()
+    if client.available:
+        st.success(f"AI provider: Google Gemini · model `{client.model}`. Your question and the ward context shown below are sent to Google's API. "
+                   "The context contains aggregated ward-level data only (no personal data).")
+    else:
+        st.warning(f"AI assistant is not configured: set `{ENV_KEY}` (copy `.env.example` to `.env`) and restart the app. "
+                   "All other dashboard features work without it, and the rule-based evidence summary below is still available.")
+
+    city, ward = ward_selector(wards, "mi")
+    hz = st.radio("Prediction horizon", list(C.HORIZONS), index=1, horizontal=True, key="mi_h", format_func=lambda x: f"{x} weeks ahead")
+    if ward is None:
+        return
+    asof_str = str(pd.Timestamp(asof).date())
+    try:
+        ctx = get_context(ward, asof_str, hz)
+    except ValueError as exc:
+        st.warning(str(exc))
+        return
+
+    ml = ctx["ML_PREDICTION_do_not_override"]["selected_horizon"]
+    c = st.columns(3)
+    c[0].markdown(card("Predicted cases / week", f"{ml['predicted_cases_per_week']:.1f}", f"80% range {ml['interval_80pct'][0]:.1f} - {ml['interval_80pct'][1]:.1f}"), unsafe_allow_html=True)
+    c[1].markdown(card("ML risk category", badge(ml["ml_risk_category"]), "set by the model, not the AI"), unsafe_allow_html=True)
+    c[2].markdown(card("Evidence status", "", ctx["evidence_status"]), unsafe_allow_html=True)
+
+    with st.expander("Evidence summary (rule-based from the same data, not written by an LLM)", expanded=not client.available):
+        for line in evidence_brief(ctx):
+            st.markdown(f"- {line}")
+        st.caption(DISCLAIMER)
+
+    # ---- chat state --------------------------------------------------------------------------------
+    ss = st.session_state
+    if "mi_history" not in ss:
+        ss["mi_history"] = []
+    if "mi_budget" not in ss:
+        ss["mi_budget"] = CallBudget(max_calls=25)
+    if "mi_cache" not in ss:
+        ss["mi_cache"] = {}
+    key_ctx = f"{ward}|{asof_str}|{hz}"
+
+    st.markdown("**Suggested questions**")
+    pending = None
+    cols = st.columns(3)
+    for i, q in enumerate(SUGGESTED_QUESTIONS):
+        if cols[i % 3].button(q, key=f"mi_sq{i}", **WIDE):
+            pending = q
+    typed = st.text_input("Or ask your own question", key="mi_q", max_chars=500, placeholder="e.g. Why is the 4-week forecast lower than the 2-week one?")
+    asked = st.button("Ask MosquiTech Intelligence", key="mi_ask", type="primary")
+    question = pending or (typed.strip() if asked else "")
+
+    if question:
+        cache_key = f"{key_ctx}|{question.lower()}"
+        if cache_key in ss["mi_cache"]:
+            ss["mi_history"].append({**ss["mi_cache"][cache_key], "q": question, "key": key_ctx, "cached": True})
+        elif not client.available:
+            st.warning(f"The AI assistant needs `{ENV_KEY}`. No answer was generated. The evidence summary above shows the underlying facts.")
+        elif not ss["mi_budget"].consume():
+            st.warning("This session reached its AI question limit (cost control). Reload the page to start a new session.")
+        else:
+            turns = [h for h in ss["mi_history"] if h["key"] == key_ctx]
+            try:
+                with st.spinner("MosquiTech Intelligence is reading the model outputs..."):
+                    resp = ask(client, ctx, question, [{"q": h["q"], "a": h["a"]} for h in turns])
+                entry = {"a": resp.text, "model": resp.model, "truncated": resp.truncated,
+                         "tokens": (resp.prompt_tokens or 0) + (resp.output_tokens or 0)}
+                ss["mi_cache"][cache_key] = entry
+                ss["mi_history"].append({**entry, "q": question, "key": key_ctx, "cached": False})
+            except ValueError as exc:
+                ss["mi_budget"].used -= 1
+                st.warning(str(exc))
+            except LLMUnavailable as exc:
+                ss["mi_budget"].used -= 1
+                st.warning(str(exc))
+            except LLMError as exc:
+                ss["mi_budget"].used -= 1
+                st.error(f"{exc} No answer was generated; the ML predictions above are unaffected.")
+
+    for h in ss["mi_history"]:
+        with st.chat_message("user"):
+            st.markdown(h["q"])
+        with st.chat_message("assistant"):
+            st.markdown(h["a"])
+            note = f"AI-generated by {h['model']} from the context below"
+            if h.get("cached"):
+                note += " (repeat question: reused earlier answer, no new API call)"
+            if h.get("truncated"):
+                note += " · answer was cut off at the length limit"
+            st.caption(note + ". Verify against the dashboard values. Decision support, not medical advice.")
+    if ss["mi_history"]:
+        if st.button("Clear conversation", key="mi_clear"):
+            ss["mi_history"] = []
+    st.caption(f"AI questions left this session: {ss['mi_budget'].remaining}")
+
+    with st.expander("Exact data sent to the AI for this ward (transparency)"):
+        st.json(ctx)
+
+
 def guarded(fn, *args):
     try:
         fn(*args)
@@ -586,13 +840,16 @@ def main():
         asof = pd.Timestamp(st.selectbox("Forecast issued on (week)", dates, index=0, format_func=fmt_date, key="asof"))
         st.caption(f"Latest observation in dataset: **{fmt_date(latest_obs)}**. Choose an earlier week to review past forecasts "
                    "against what actually happened.")
+        st.caption(f"Evidence status (3-week target): {evidence_status(asof + pd.Timedelta(weeks=3), latest_obs)}.")
+        st.button("⏩ Jump to 2025 peak outbreak week", on_click=_set_asof, args=(get_peak_week(),), key="jump_peak", **WIDE)
+        st.button("⏮ Jump to latest week", on_click=_set_asof, args=(dates[0],), key="jump_latest", **WIDE)
         st.markdown("**Risk tiers (cases / ward / week)**")
         st.markdown(f"{badge('LOW')} &lt; {thresholds[0]:.0f}<br>{badge('MEDIUM')} {thresholds[0]:.0f} - {thresholds[1]:.0f}<br>"
                     f"{badge('HIGH')} {thresholds[1]:.0f} - {thresholds[2]:.0f}<br>{badge('CRITICAL')} &ge; {thresholds[2]:.0f}", unsafe_allow_html=True)
         st.caption("Thresholds come from the training-period 70th / 85th / 95th percentiles of weekly ward cases.")
         st.caption("Decision-support tool - not medical advice.")
 
-    tabs = st.tabs(["📊 Overview", "🔮 Prediction", "🗺️ Ward Risk", "🌧️ Weather", "🧠 Explanation", "📈 Model Performance", "🩺 Recommendations"])
+    tabs = st.tabs(["📊 Overview", "🔮 Prediction", "🗺️ Ward Risk", "🌧️ Weather", "🧠 Explanation", "🤖 Intelligence", "📈 Model Performance", "🩺 Recommendations"])
     reports = get_reports()
     with tabs[0]:
         guarded(tab_overview, feats, preds, asof, thresholds, latest_obs)
@@ -605,8 +862,10 @@ def main():
     with tabs[4]:
         guarded(tab_explain, feats, preds, wards, asof, models)
     with tabs[5]:
-        guarded(tab_performance, models, reports, thresholds)
+        guarded(tab_intelligence, feats, preds, wards, asof, models)
     with tabs[6]:
+        guarded(tab_performance, models, reports, thresholds)
+    with tabs[7]:
         guarded(tab_recommendations, feats, preds, wards, asof, thresholds)
 
 

@@ -53,3 +53,14 @@ FEATURE_LABELS = {
     "water_logging_risk_index": "Waterlogging risk", "sanitation_score": "Sanitation score",
     "week_sin": "Season (sin)", "week_cos": "Season (cos)",
 }
+
+# ---- Explainability: features grouped into human-readable drivers --------------------------------
+FEATURE_GROUPS = {
+    "Rainfall": ["rainfall_mm", "rain_lag1", "rain_lag2", "rain_lag3", "rain_lag4", "rain_cum2", "rain_cum4"],
+    "Temperature": ["avg_temp_c", "temp_roll2", "temp_roll4"],
+    "Humidity": ["relative_humidity_pct", "humid_roll2", "humid_roll4"],
+    "Recent dengue cases": ["cases_now", "cases_lag1", "cases_lag2", "cases_lag3", "cases_roll4"],
+    "Ward vulnerability": ["population_density_sqkm", "water_logging_risk_index", "sanitation_score"],
+    "Season (calendar)": ["week_sin", "week_cos"],
+}
+WEATHER_GROUPS = ("Rainfall", "Temperature", "Humidity")
