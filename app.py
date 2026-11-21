@@ -1,9 +1,4 @@
-"""MosquiTech - AI-Powered Dengue Early Warning & Urban Risk Intelligence.   Run:  streamlit run app.py
 
-All heavy work is cached: models are loaded once (st.cache_resource), features/predictions are computed
-once (st.cache_data). Interacting with widgets only filters pre-computed tables. No training happens here
-unless the models folder is empty on the very first launch.
-"""
 from __future__ import annotations
 
 import numpy as np
@@ -24,13 +19,12 @@ from src.validation import calibration_table, confusion, evidence_status, monthl
 st.set_page_config(page_title="MosquiTech", page_icon="🦟", layout="wide", initial_sidebar_state="expanded")
 
 def _streamlit_wide_kwargs() -> dict:
-    """Newer Streamlit (>=1.50) uses width='stretch'; older versions use use_container_width=True."""
+
     try:
         major, minor = (int(x) for x in st.__version__.split(".")[:2])
         return {"width": "stretch"} if (major, minor) >= (1, 50) else {"use_container_width": True}
     except Exception:
         return {"use_container_width": True}
-
 
 WIDE = _streamlit_wide_kwargs()
 TIER_COLORS = C.RISK_COLORS
@@ -59,32 +53,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-# --------------------------------------------------------------------------------------------------
-# Cached loaders  (no work is repeated when the user changes a widget)
-# --------------------------------------------------------------------------------------------------
 @st.cache_resource(show_spinner="Loading trained models...")
 def get_models() -> dict:
     if models_exist():
         try:
             return load_models()
         except Exception:
-            pass  # e.g. models saved with a different scikit-learn version -> retrain below
+            pass
     from src import train_model
     with st.spinner("Trained models missing or incompatible - training once (about 3-4 minutes)..."):
         train_model.main(quiet=True)
     return load_models()
 
-
 @st.cache_data(show_spinner="Building ward-level rainfall-lag features...")
 def get_features() -> pd.DataFrame:
     return prepare_data()
 
-
 @st.cache_data(show_spinner="Running model inference for all wards...")
 def get_predictions() -> pd.DataFrame:
     return predict_all(get_features(), get_models())
-
 
 @st.cache_data
 def get_reports() -> dict:
@@ -98,7 +85,6 @@ def get_reports() -> dict:
                 out[k][name] = pd.to_datetime(out[k][name])
     return out
 
-
 @st.cache_data
 def get_lag_correlation() -> pd.DataFrame:
     f = get_features().sort_values(["ward_id", "date"])
@@ -106,21 +92,18 @@ def get_lag_correlation() -> pd.DataFrame:
     rows = [{"lag_weeks": k, "correlation": float(g.shift(k).corr(f["dengue_cases"]))} for k in range(0, 9)]
     return pd.DataFrame(rows)
 
-
 @st.cache_data(show_spinner=False)
 def get_background() -> pd.DataFrame:
     return make_background(get_features())
 
-
 @st.cache_data(show_spinner="Computing Shapley explanation...")
 def get_explanation(ward: str, asof_str: str, horizon: int) -> dict:
-    """Prediction-level explanation for one ward-week (cached per selection)."""
+
     f = get_features()
     row = f[(f["ward_id"] == ward) & (f["date"] == pd.Timestamp(asof_str))]
     if row.empty:
         raise ValueError("No feature data for this ward and week.")
     return explain_instance(get_models()["bundles"][horizon]["model"], row.iloc[0], get_background())
-
 
 @st.cache_data(show_spinner="Computing global driver importance...")
 def get_global_groups(horizon: int) -> pd.DataFrame:
@@ -129,59 +112,56 @@ def get_global_groups(horizon: int) -> pd.DataFrame:
     sample = test_rows.sample(n=min(60, len(test_rows)), random_state=C.RANDOM_STATE)
     return global_group_importance(get_models()["bundles"][horizon]["model"], sample, get_background())
 
-
 @st.cache_data(show_spinner=False)
 def get_context(ward: str, asof_str: str, horizon: int) -> dict:
-    """Grounded context for MosquiTech Intelligence (real model outputs + dataset values only)."""
+
     return build_context(feats=get_features(), preds=get_predictions(), models=get_models(), reports=get_reports(),
                          background=get_background(), asof=pd.Timestamp(asof_str), ward=ward, horizon=horizon,
                          explanation=get_explanation(ward, asof_str, horizon))
 
-
 @st.cache_data(show_spinner=False)
 def get_peak_week() -> pd.Timestamp:
-    """Held-out-period forecast week with the most HIGH/CRITICAL wards (3-week horizon)."""
+
     p = get_predictions()
     p = p[p["date"] > pd.Timestamp(C.VAL_END)]
     counts = p["risk_h3"].isin(["HIGH", "CRITICAL"]).groupby(p["date"]).sum()
     return pd.Timestamp(counts.idxmax())
 
-
 def _set_asof(date) -> None:
     st.session_state["asof"] = pd.Timestamp(date)
 
-
-# --------------------------------------------------------------------------------------------------
-# Small UI helpers
-# --------------------------------------------------------------------------------------------------
 def card(label: str, value, sub: str = "", color: str | None = None) -> str:
     style = f' style="color:{color}"' if color else ""
     return f'<div class="mt-card"><div class="lbl">{label}</div><div class="val"{style}>{value}</div><div class="sub">{sub}</div></div>'
 
-
 def badge(tier: str) -> str:
     return f'<span class="badge" style="background:{TIER_COLORS[tier]}">{tier}</span>'
 
-
 def style_fig(fig, height: int = 380):
-    fig.update_layout(template="plotly_dark", height=height, paper_bgcolor="rgba(0,0,0,0)",
-                      plot_bgcolor="rgba(17,28,51,0.6)", margin=dict(l=10, r=10, t=40, b=10),
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
+    fig.update_layout(
+        template="plotly_dark",
+        height=height,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(17,28,51,0.6)",
+        margin=dict(l=10, r=10, t=65, b=85),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.22,
+            x=0
+        )
+    )
     return fig
-
 
 def show(fig, height: int = 380):
     st.plotly_chart(style_fig(fig, height), **WIDE)
 
-
 def fmt_date(d) -> str:
     return pd.Timestamp(d).strftime("%d %b %Y")
-
 
 def tier_of(value: float, thresholds) -> str:
     from src.risk_classification import classify
     return classify(value, thresholds)
-
 
 def ward_selector(wards: pd.DataFrame, key: str, default_city: str | None = None):
     cities = sorted(wards["city"].unique())
@@ -194,17 +174,12 @@ def ward_selector(wards: pd.DataFrame, key: str, default_city: str | None = None
     ward = c2.selectbox("Ward", options, key=f"{key}_ward")
     return city, ward
 
-
 def get_pred_row(preds: pd.DataFrame, ward: str, asof) -> pd.Series | None:
     r = preds[(preds["ward_id"] == ward) & (preds["date"] == asof)]
     return None if r.empty else r.iloc[0]
 
-
-# --------------------------------------------------------------------------------------------------
-# Tabs
-# --------------------------------------------------------------------------------------------------
 def season_panel(feats, asof, hz, thresholds, elevated):
-    """Evidence for whether the current tier mix is plausible for the time of year (dataset facts only)."""
+
     target = asof + pd.Timedelta(weeks=hz)
     hist = seasonal_history(feats, target, thresholds)
     st.markdown("#### Is this forecast plausible for the time of year?")
@@ -232,9 +207,8 @@ def season_panel(feats, asof, hz, thresholds, elevated):
         fig.update_layout(title="Observed mean weekly cases per ward by month, 2016-2025 (target month highlighted)", yaxis_title="cases / ward / week")
         show(fig, 260)
 
-
 def section_shap(feats, ward, asof, hz):
-    """Shapley prediction-level explanation + global driver importance."""
+
     st.markdown("#### Prediction-level explanation (Shapley values)")
     try:
         ex = get_explanation(ward, str(pd.Timestamp(asof).date()), hz)
@@ -272,7 +246,6 @@ def section_shap(feats, ward, asof, hz):
                "They show how the MODEL uses inputs, not what causes dengue. Inputs that move together (e.g. rainfall lags) share credit, "
                "and the method evaluates mixed combinations of conditions that may not occur in reality.")
 
-
 def risk_validation_section(reports, thresholds):
     vp, tp = reports["validation_predictions"], reports["test_predictions"]
     if vp is None or tp is None:
@@ -306,7 +279,6 @@ def risk_validation_section(reports, thresholds):
         show(fm, 340)
     st.caption("Dry-season months are almost entirely LOW in the actual data too, so all-LOW forecasts in those months are expected. "
                "On the 2025 test year the CRITICAL tier over-forecast (forecast mean above actual mean): more false alarms than misses.")
-
 
 def tab_overview(feats, preds, asof, thresholds, latest_obs):
     st.subheader("Executive Overview")
@@ -358,7 +330,6 @@ def tab_overview(feats, preds, asof, thresholds, latest_obs):
         "Ward": top["ward_id"], "City": top["city"], "Predicted cases/wk": top[f"pred_h{hz}"].round(1),
         "80% range": [f"{lo:.1f} - {hi:.1f}" for lo, hi in zip(top[f"lo_h{hz}"], top[f"hi_h{hz}"])],
         "Risk": top[f"risk_h{hz}"]}), **WIDE, hide_index=True)
-
 
 def tab_prediction(feats, preds, wards, asof, thresholds):
     st.subheader("Dengue Prediction")
@@ -416,7 +387,6 @@ def tab_prediction(feats, preds, wards, asof, thresholds):
             "Predicted": ht["predicted_cases"].round(1), "Low": ht["lower"].round(1), "High": ht["upper"].round(1),
             "Risk": ht["risk"]}), **WIDE, hide_index=True)
         st.caption("Intervals are empirical 80% ranges built from validation-set errors; they are not guarantees.")
-
 
 def tab_ward_risk(feats, preds, wards, asof, thresholds):
     st.subheader("Ward Risk Intelligence")
@@ -483,7 +453,6 @@ def tab_ward_risk(feats, preds, wards, asof, thresholds):
     else:
         st.info("Pick at least two wards to compare.")
 
-
 def tab_weather(feats, wards, asof):
     st.subheader("Weather Analytics")
     city, ward = ward_selector(wards, "wx")
@@ -546,7 +515,6 @@ def tab_weather(feats, wards, asof):
     st.caption(f"Exploratory view across all wards: correlation peaks at a lag of {int(best['lag_weeks'])} weeks (r = {best['correlation']:.2f}), "
                "which is consistent with the 2-4 week breeding-and-incubation delay. Correlation does not prove causation.")
 
-
 def tab_explain(feats, preds, wards, asof, models):
     st.subheader("Risk Explanation")
     hz = st.radio("Horizon", list(C.HORIZONS), index=1, horizontal=True, key="ex_h", format_func=lambda x: f"{x} weeks ahead")
@@ -588,7 +556,6 @@ def tab_explain(feats, preds, wards, asof, models):
     st.caption("Orange bars are in the top quartile of historical values. This is a descriptive comparison to history, not proof of cause. "
                "For sanitation score a LOW percentile is the concerning direction.")
     section_shap(feats, ward, asof, hz)
-
 
 def tab_performance(models, reports, thresholds):
     st.subheader("Model Performance")
@@ -672,7 +639,6 @@ def tab_performance(models, reports, thresholds):
         "- **Importance is not causation:** feature importance shows what the model uses, not what causes outbreaks.\n"
         "- **Scope:** one dataset (60 wards, 5 cities, 2016-2025); no mobility, serotype, intervention or geographic data; no map because no coordinates were supplied.")
 
-
 def tab_recommendations(feats, preds, wards, asof, thresholds):
     st.subheader("Public Health Recommendations")
     st.warning(DISCLAIMER)
@@ -703,8 +669,6 @@ def tab_recommendations(feats, preds, wards, asof, thresholds):
     st.dataframe(pd.DataFrame({"Ward": top["ward_id"], "City": top["city"], "Predicted cases/wk": top[f"pred_h{hz}"].round(1), "Risk": top[f"risk_h{hz}"]}),
                  **WIDE, hide_index=True)
 
-
-# --------------------------------------------------------------------------------------------------
 def tab_intelligence(feats, preds, wards, asof, models):
     st.subheader("🤖 MosquiTech Intelligence")
     st.caption("Ask questions about a ward's forecast. The assistant only explains numbers produced by the ML model and the dataset; "
@@ -739,7 +703,6 @@ def tab_intelligence(feats, preds, wards, asof, models):
             st.markdown(f"- {line}")
         st.caption(DISCLAIMER)
 
-    # ---- chat state --------------------------------------------------------------------------------
     ss = st.session_state
     if "mi_history" not in ss:
         ss["mi_history"] = []
@@ -805,13 +768,11 @@ def tab_intelligence(feats, preds, wards, asof, models):
     with st.expander("Exact data sent to the AI for this ward (transparency)"):
         st.json(ctx)
 
-
 def guarded(fn, *args):
     try:
         fn(*args)
-    except Exception as exc:  # keep the rest of the dashboard alive if one module fails
+    except Exception as exc:
         st.error(f"This section could not be displayed: {exc}")
-
 
 def main():
     st.markdown('<div class="mt-hero"><h1>🦟 MosquiTech</h1><p>AI-Powered Dengue Early Warning &amp; Urban Risk Intelligence</p></div>', unsafe_allow_html=True)
@@ -867,6 +828,5 @@ def main():
         guarded(tab_performance, models, reports, thresholds)
     with tabs[7]:
         guarded(tab_recommendations, feats, preds, wards, asof, thresholds)
-
 
 main()
