@@ -11,7 +11,7 @@ from .config import ROOT
 
 ENV_KEY = "GEMINI_API_KEY"
 ENV_MODEL = "GEMINI_MODEL"
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-3.1-flash-lite"
 BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
 
