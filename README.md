@@ -173,9 +173,6 @@ https://github.com/Mehrin07/MosquiTech
 **Application:**  
 Run locally using the installation instructions above.
 
-**Demo Video:**  
-[Add the public link to the required 2-minute screen-recorded demonstration with voiceover.]
-
 ## 8. Team
 
 **Team Name: Aethrix**
