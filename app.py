@@ -358,10 +358,17 @@ def tab_prediction(feats, preds, wards, asof, thresholds):
     err_up = (ht["upper"] - ht["predicted_cases"]).clip(lower=0)
     err_dn = (ht["predicted_cases"] - ht["lower"]).clip(lower=0)
     fig.add_trace(go.Scatter(
-        x=ht["target_date"], y=ht["predicted_cases"], mode="lines+markers", name="Forecast (80% interval)",
+        x=ht["target_date"],
+        y=ht["predicted_cases"],
+        mode="lines+markers+text",
+        name="Forecast (80% interval)",
         line=dict(color="#94a3b8", dash="dot"),
-        marker=dict(size=12, color=[TIER_COLORS[r] for r in ht["risk"]], line=dict(width=1, color="white")),
-        error_y=dict(type="data", symmetric=False, array=err_up, arrayminus=err_dn, color="#94a3b8")))
+        marker=dict(size=13, color=[TIER_COLORS[r] for r in ht["risk"]], line=dict(width=1, color="white")),
+        text=[f"{p:.1f}" for p in ht["predicted_cases"]],
+        textposition=["top left", "top center", "top right"],
+        textfont=dict(size=12, color="#f8fafc"),
+        cliponaxis=False,
+        error_y=dict(type="data", symmetric=False, array=err_up, arrayminus=err_dn, color="#cbd5e1", thickness=1.8, width=5)))
     later = feats[(feats["ward_id"] == ward) & (feats["date"] > asof) & (feats["date"] <= asof + pd.Timedelta(weeks=max(C.HORIZONS)))]
     if not later.empty:
         fig.add_trace(go.Scatter(x=later["date"], y=later["dengue_cases"], mode="markers", name="Actual (observed later)",
