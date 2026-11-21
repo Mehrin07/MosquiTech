@@ -1,8 +1,8 @@
 """Ward-grouped lag / rolling features and future-aligned targets.
 
 Every lag, rolling mean and shift is computed INSIDE each ward (groupby ward_id) on data sorted
-by date, so one ward's rainfall can never leak into another ward's features.
-Rolling windows include the current week and only look backwards. Targets look forward.
+by date, so values from one ward never leak into another ward's features.
+Rolling windows look backwards (including the current week); targets shift forward by h weeks.
 """
 from __future__ import annotations
 import numpy as np
@@ -15,20 +15,25 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     d = df.sort_values(["ward_id", "date"]).reset_index(drop=True).copy()
     g = d.groupby("ward_id", sort=False)
 
+    # Weekly rainfall lags (1-4 weeks) and backward rolling cumulative sums
     for k in (1, 2, 3, 4):
         d[f"rain_lag{k}"] = g["rainfall_mm"].shift(k)
     d["rain_cum2"] = g["rainfall_mm"].transform(lambda s: s.rolling(2, min_periods=2).sum())
     d["rain_cum4"] = g["rainfall_mm"].transform(lambda s: s.rolling(4, min_periods=4).sum())
+
+    # Temperature and humidity backward rolling averages
     d["temp_roll2"] = g["avg_temp_c"].transform(lambda s: s.rolling(2, min_periods=2).mean())
     d["temp_roll4"] = g["avg_temp_c"].transform(lambda s: s.rolling(4, min_periods=4).mean())
     d["humid_roll2"] = g["relative_humidity_pct"].transform(lambda s: s.rolling(2, min_periods=2).mean())
     d["humid_roll4"] = g["relative_humidity_pct"].transform(lambda s: s.rolling(4, min_periods=4).mean())
 
+    # Historical dengue case trajectory per ward (current week, 1-3 week lags, 4-week mean)
     d["cases_now"] = d["dengue_cases"]
     for k in (1, 2, 3):
         d[f"cases_lag{k}"] = g["dengue_cases"].shift(k)
     d["cases_roll4"] = g["dengue_cases"].transform(lambda s: s.rolling(4, min_periods=4).mean())
 
+    # Calendar seasonality encoding (known in advance)
     week = d["date"].dt.isocalendar().week.astype(float)
     d["week_sin"] = np.sin(2 * np.pi * week / 52.0)
     d["week_cos"] = np.cos(2 * np.pi * week / 52.0)
