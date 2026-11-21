@@ -38,9 +38,9 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
 def add_targets(df: pd.DataFrame, horizons=HORIZONS) -> pd.DataFrame:
     """Add target_h{h} (cases h weeks AHEAD) and target_date_h{h} for each horizon.
 
-    df must already be sorted by ward_id, date on a regular weekly grid.
-    The row for week t holds only information known at t; target_h is the value at t + h weeks.
-    """
+df must already be sorted by ward_id, date on a regular weekly grid.
+The row for week t holds only information known at t; target_h is the value at t + h weeks.
+"""
     d = df.copy()
     g = d.groupby("ward_id", sort=False)
     for h in horizons:
