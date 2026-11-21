@@ -1,4 +1,4 @@
-# 🦟 MosquiTech
+<img width="1217" height="397" alt="image" src="https://github.com/user-attachments/assets/4e4b7be1-b279-40d7-8a20-f5bd0d1dddf4" /># 🦟 MosquiTech
 
 **AI-Powered Dengue Early Warning & Urban Risk Intelligence**
 
@@ -132,7 +132,9 @@ The following tools and services are used in the development and runtime of Mosq
 | Tool / API | Purpose |
 |---|---|
 | ChatGPT (OpenAI) | Development assistance, code explanations, debugging, and documentation support. |
-| Claude (Anthropic) | AI-assisted development and documentation support. |
+| OpenAI Codex | Code generation, code modifications, and coding assistance. |
+| Claude (Anthropic) | AI-assisted development, code review, and documentation support. |
+| Google Gemini | Development assistance, debugging, and technical guidance. |
 | Google Gemini API | Runtime AI assistant for generating contextual health insights based on MosquiTech's model outputs and supporting evidence. |
 
 ### Gemini API Details
