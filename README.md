@@ -1,4 +1,4 @@
-<img width="1217" height="397" alt="image" src="https://github.com/user-attachments/assets/4e4b7be1-b279-40d7-8a20-f5bd0d1dddf4" /># 🦟 MosquiTech
+# 🦟 MosquiTech
 
 **AI-Powered Dengue Early Warning & Urban Risk Intelligence**
 
