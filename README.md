@@ -80,7 +80,29 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### Step 4: Run the Application
+### Step 4: Download and Prepare the Dataset
+
+The historical dengue and weather dataset was provided by the EDU AI Engineering Hackathon organizers. It is not included in this GitHub repository.
+
+Download the dataset from the [official organizer-provided dataset link](https://docs.google.com/spreadsheets/d/1QFI0ACJRvJQkiQT3LfGHklM3g4PgaJWUt8xSVU07NIE/edit?usp=sharing).
+
+After downloading or exporting it as an Excel file (`.xlsx`):
+
+1. Create a folder named `data` in the project root.
+2. Place the downloaded Excel file inside the folder.
+3. Rename the file to `hackathon_dataset.xlsx`.
+
+The expected location is:
+
+```text
+MosquiTech/
+└── data/
+    └── hackathon_dataset.xlsx
+```
+
+**Important:** The dataset is excluded from GitHub. Users must obtain it from the original organizer-provided source before running the application.
+
+### Step 5: Run the Application
 
 ```bash
 streamlit run app.py
@@ -124,6 +146,8 @@ To reproduce model training and generate the associated reports:
 ```bash
 python -m src.train_model
 ```
+
+Model training requires the dataset to be available in the expected location.
 
 ## 5. AI Tools and External API Disclosure
 
@@ -197,7 +221,7 @@ MosquiTech/
 ├── README.md
 ├── ARCHITECTURE.md
 │
-├── data/
+├── data/                       # Local folder; dataset not tracked by Git
 │   └── hackathon_dataset.xlsx
 │
 ├── models/
@@ -230,8 +254,10 @@ MosquiTech/
 │   └── report.py
 │
 └── tests/
+    ├── __init__.py
     ├── test_pipeline.py
     ├── test_ai_modules.py
+    ├── test_preprocessing.py
     └── stub_run_app.py
 ```
 
